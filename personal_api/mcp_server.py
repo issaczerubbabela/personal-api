@@ -18,12 +18,17 @@ from .db import connect
 
 INSTRUCTIONS = """\
 Personal data for one person, synced periodically from their own services into a local
-database: GitHub activity and repositories, calendar events, and money transactions.
-Data is as fresh as the last sync (see get_profile). All timestamps are UTC.
-Records share one shape: source, type, timestamp, title, content, url, data.
-Sources and types: github/event, github/repo, calendar/event, expenses/expense,
-expenses/income, expenses/transfer. For money questions prefer spending_summary over
-adding up rows from get_activity."""
+database. Data is as fresh as the last sync (see get_profile). All timestamps are UTC.
+Records share one shape: id, source, type, timestamp, title, content, url, data.
+Sources and types (only the ones get_profile lists are set up):
+- github: event, repo          - calendar: event
+- expenses: expense, income, transfer
+- leetcode: solved, day (submissions per active day)
+- monkeytype: test             - obsidian: note
+- browser: visit (only returned when you pass source="browser")
+For money questions use spending_summary rather than adding up rows. For headline numbers
+(problems solved, typing speed, streaks) use get_stats. Lists cut long content such as
+notes to a snippet marked content_truncated; call get_record with the id for the rest."""
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 
@@ -47,8 +52,8 @@ def create_server(config: dict[str, Any] | None = None) -> MCPServer:
         """Timeline of what the person did, newest first, across all sources.
 
         since/until are ISO dates or datetimes (since inclusive, until exclusive), e.g.
-        since="2026-03-01", until="2026-04-01" for March. Filter with source ("github",
-        "calendar", "expenses") and type ("event", "expense", "income", "transfer").
+        since="2026-03-01", until="2026-04-01" for March. Filter with source and type
+        (see the server instructions for the values).
         Returns {total, items}; page with limit/offset when total exceeds limit."""
         with closing(connect(db_path)) as conn:
             return queries.activity(conn, since, until, source, type,
@@ -64,11 +69,28 @@ def create_server(config: dict[str, Any] | None = None) -> MCPServer:
 
     @server.tool(annotations=READ_ONLY)
     def search(query: str, source: str | None = None, limit: int = 20) -> dict[str, Any]:
-        """Full-text search over record titles and content (repo names and descriptions,
-        event titles, transaction descriptions, categories and remarks). Every word must
+        """Full-text search over record titles and content (notes, repo names and
+        descriptions, event titles, transactions, page titles of visited sites). Every word must
         match; a word also matches as a prefix. Use a few keywords, not a sentence."""
         with closing(connect(db_path)) as conn:
             return queries.search(conn, query, source, max(1, min(limit, 200)))
+
+    @server.tool(annotations=READ_ONLY)
+    def get_record(id: int) -> dict[str, Any]:
+        """One record in full by its id, e.g. the whole text of a note whose content was
+        truncated in get_activity or search results."""
+        with closing(connect(db_path)) as conn:
+            found = queries.record(conn, id)
+        if not found:
+            raise ValueError(f"no record with id {id}")
+        return found
+
+    @server.tool(annotations=READ_ONLY)
+    def get_stats() -> dict[str, Any]:
+        """Current headline numbers per source: LeetCode problems solved by difficulty,
+        ranking and streak; Monkeytype tests, hours typing and best wpm per mode."""
+        with closing(connect(db_path)) as conn:
+            return queries.stats(conn)
 
     @server.tool(annotations=READ_ONLY)
     def spending_summary(since: str | None = None, until: str | None = None,

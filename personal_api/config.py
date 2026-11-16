@@ -13,6 +13,7 @@ ENV_OVERRIDES = {
     "GITHUB_TOKEN": ("sources", "github", "token"),
     "CALENDAR_ICS_URL": ("sources", "calendar", "ics_url"),
     "LEDGAR_SCRIPT_URL": ("sources", "expenses", "script_url"),
+    "MONKEYTYPE_APE_KEY": ("sources", "monkeytype", "ape_key"),
 }
 
 

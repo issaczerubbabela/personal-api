@@ -1,5 +1,5 @@
 # Copy to config.toml (gitignored) and fill in. Secrets can come from env vars instead:
-#   PAPI_TOKEN, GITHUB_TOKEN, CALENDAR_ICS_URL, LEDGAR_SCRIPT_URL
+#   PAPI_TOKEN, GITHUB_TOKEN, CALENDAR_ICS_URL, LEDGAR_SCRIPT_URL, MONKEYTYPE_APE_KEY
 
 [api]
 # Required. Generate one with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -52,3 +52,37 @@ script_url = ""
 # amount = "amount"
 # description = "description"
 # category = "category"
+
+[sources.leetcode]
+enabled = false
+username = ""          # the profile must be public
+
+[sources.monkeytype]
+enabled = false
+username = ""          # public profile: totals, streak, personal bests (no key needed)
+# Optional, for every individual test: Monkeytype -> Account settings -> Ape keys.
+# Limited to 30 calls a day, so do not sync more often than hourly.
+ape_key = ""
+
+[sources.obsidian]
+enabled = false
+vault = "~/Documents/MyVault"
+exclude = ["Private", "Work"]     # folder names or paths inside the vault to skip
+
+[sources.browser]
+enabled = false
+# Domains (and their subdomains) that are never stored.
+exclude_domains = ["netbanking.hdfcbank.com", "accounts.google.com"]
+
+[[sources.browser.profiles]]
+kind = "safari"        # reads ~/Library/Safari/History.db; the terminal needs Full Disk Access
+
+# [[sources.browser.profiles]]
+# kind = "chromium"    # Chrome, Helium, Brave, Arc: the profile's "History" file
+# name = "helium"
+# path = "~/Library/Application Support/net.imput.helium/Default/History"
+
+# [[sources.browser.profiles]]
+# kind = "firefox"     # Firefox, Zen: the profile's "places.sqlite"
+# name = "zen"
+# path = "~/Library/Application Support/zen/Profiles/<profile>/places.sqlite"

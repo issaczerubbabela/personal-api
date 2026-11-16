@@ -76,8 +76,8 @@ def client(config, monkeypatch):
     real_github, real_calendar = github.collect, calendar.collect
     from personal_api import collectors
     monkeypatch.setitem(collectors.COLLECTORS, "github",
-                        lambda s: real_github(s, transport=github_transport()))
-    monkeypatch.setitem(collectors.COLLECTORS, "calendar", lambda s: real_calendar(s, now=NOW))
+                        lambda s, ctx: real_github(s, transport=github_transport()))
+    monkeypatch.setitem(collectors.COLLECTORS, "calendar", lambda s, ctx: real_calendar(s, now=NOW))
     conn = connect(config["database"]["path"])
     for _ in range(2):  # twice: syncing must be idempotent
         summary = sync(conn, config)
@@ -187,7 +187,7 @@ def ledgar(tmp_path, monkeypatch):
     from personal_api import collectors
     rows = list(LEDGAR_ROWS)
     monkeypatch.setitem(collectors.COLLECTORS, "expenses",
-                        lambda s: expenses.collect(s, transport=ledgar_transport(rows)))
+                        lambda s, ctx: expenses.collect(s, transport=ledgar_transport(rows)))
     config = {
         "api": {"token": "secret"}, "profile": {"name": "Test"},
         "database": {"path": str(tmp_path / "db.sqlite")},
@@ -245,7 +245,7 @@ def test_mcp_tools(ledgar):
     async def run():
         async with Client(create_server(config)) as client:
             tools = {t.name for t in (await client.list_tools()).tools}
-            assert tools == {"get_profile", "get_activity", "list_projects", "search",
+            assert tools == {"get_profile", "get_activity", "list_projects", "search", "get_record", "get_stats",
                              "spending_summary"}
             profile = await client.call_tool("get_profile")
             assert profile.structured_content["sources"]["expenses"]["records"] == 4
@@ -258,3 +258,169 @@ def test_mcp_tools(ledgar):
             assert bad.is_error
 
     anyio.run(run)
+
+
+# --- LeetCode, Monkeytype, Obsidian, browser --------------------------------------------
+
+def leetcode_transport(calendar_visible=True):
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        body = json.loads(request.content)
+        if "userCalendar" in body["query"]:
+            if not calendar_visible:
+                return httpx.Response(200, json={"errors": [{"message": "no permission"}],
+                                                 "data": {"matchedUser": None}})
+            year = body["variables"]["y"]
+            days = {"1772323200": 4} if year is None else {"1740787200": 2}  # 2026-03-01, 2025-03-01
+            return httpx.Response(200, json={"data": {"matchedUser": {"userCalendar": {
+                "streak": 3, "totalActiveDays": 2, "activeYears": [2025, 2026],
+                "submissionCalendar": json.dumps(days)}}}})
+        return httpx.Response(200, json={"data": {
+            "matchedUser": {"username": "me", "profile": {"ranking": 1234},
+                            "submitStatsGlobal": {"acSubmissionNum": [
+                                {"difficulty": "All", "count": 10}, {"difficulty": "Easy", "count": 6},
+                                {"difficulty": "Medium", "count": 3}, {"difficulty": "Hard", "count": 1}]}},
+            "recentAcSubmissionList": [{"id": "9", "title": "Two Sum", "titleSlug": "two-sum",
+                                        "timestamp": "1772359200", "lang": "python3"}],
+            "userContestRanking": None}})
+    return httpx.MockTransport(handler)
+
+
+def test_leetcode():
+    from personal_api.collectors import leetcode
+    records = leetcode.collect({"username": "me"}, transport=leetcode_transport()).records
+    by_type = {}
+    for r in records:
+        by_type.setdefault(r.type, []).append(r)
+    assert by_type["solved"][0].url == "https://leetcode.com/problems/two-sum/"
+    assert {r.external_id: r.data["submissions"] for r in by_type["day"]} == {"2026-03-01": 4, "2025-03-01": 2}
+    stats = by_type["stats"][0]
+    assert stats.title == "LeetCode: 10 solved (6 easy, 3 medium, 1 hard)"
+    assert stats.data["streak"] == 3 and stats.data["contest_rating"] is None
+
+    hidden = leetcode.collect({"username": "me"}, transport=leetcode_transport(False)).records
+    assert {r.type for r in hidden} == {"solved", "stats"}  # private calendar is not fatal
+
+
+def test_monkeytype_is_incremental(tmp_path):
+    from personal_api import collectors
+    from personal_api.collectors import monkeytype
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/results":
+            assert request.headers["Authorization"] == "ApeKey k"
+            calls.append(dict(request.url.params))
+            return httpx.Response(200, json={"message": "ok", "data": [
+                {"_id": "r1", "wpm": 92.5, "rawWpm": 95, "acc": 97.1, "mode": "time", "mode2": "30",
+                 "timestamp": 1772359200000, "testDuration": 30, "isPb": True}]})
+        return httpx.Response(200, json={"message": "ok", "data": {
+            "name": "Me", "streak": 2, "maxStreak": 9,
+            "typingStats": {"completedTests": 40, "startedTests": 90, "timeTyping": 7200},
+            "personalBests": {"time": {"30": [{"wpm": 92.5}, {"wpm": 80}], "60": []},
+                              "words": {"10": [{"wpm": 110}]}}}})
+
+    config = {"database": {"path": str(tmp_path / "db.sqlite")},
+              "sources": {"monkeytype": {"enabled": True, "username": "me", "ape_key": "k"}}}
+    conn = connect(config["database"]["path"])
+    original = collectors.COLLECTORS["monkeytype"]
+    collectors.COLLECTORS["monkeytype"] = lambda s, ctx: monkeytype.collect(
+        s, ctx, transport=httpx.MockTransport(handler))
+    try:
+        assert sync(conn, config)["monkeytype"] == {"ok": True, "records": 2}
+        sync(conn, config)
+    finally:
+        collectors.COLLECTORS["monkeytype"] = original
+    assert "onOrAfterTimestamp" not in calls[0]
+    assert calls[1]["onOrAfterTimestamp"] == "1772359200000"
+
+    from personal_api import queries
+    stats = queries.stats(conn)["monkeytype"]
+    assert stats["best_wpm"] == {"time 30": 92.5, "words 10": 110}
+    assert stats["hours_typing"] == 2.0
+    test = queries.activity(conn, source="monkeytype", type="test")["items"][0]
+    assert test["title"] == "92.5 wpm, 97.1% accuracy (time 30)"
+    assert queries.activity(conn)["total"] == 1  # the stats snapshot is not timeline activity
+
+
+def test_obsidian(tmp_path):
+    from personal_api import queries
+    vault = tmp_path / "Vault"
+    (vault / "Projects").mkdir(parents=True)
+    (vault / "Private").mkdir()
+    (vault / ".obsidian").mkdir()
+    (vault / "Projects" / "Personal API.md").write_text(
+        "---\ntags: [project, api]\n---\nCollectors sync into SQLite. See [[Ideas|my ideas]] #python\n"
+        + "filler " * 200)
+    (vault / "Ideas.md").write_text("---\ntags:\n  - inbox\n---\nBuild a life log.")
+    (vault / "Private" / "Diary.md").write_text("secret")
+    (vault / ".obsidian" / "x.md").write_text("config")
+    config = {"database": {"path": str(tmp_path / "db.sqlite")},
+              "sources": {"obsidian": {"enabled": True, "vault": str(vault), "exclude": ["Private"]}}}
+    conn = connect(config["database"]["path"])
+    assert sync(conn, config)["obsidian"] == {"ok": True, "records": 2}
+
+    hit = queries.search(conn, "collectors sqlite")["items"][0]
+    assert hit["title"] == "Personal API" and hit["content_truncated"]
+    assert hit["data"]["tags"] == ["api", "project", "python"] and hit["data"]["links"] == ["Ideas"]
+    assert queries.record(conn, hit["id"])["content"].endswith("filler")
+    assert queries.search(conn, "secret")["total"] == 0
+
+    (vault / "Ideas.md").unlink()
+    sync(conn, config)
+    assert [i["title"] for i in queries.activity(conn, source="obsidian")["items"]] == ["Personal API"]
+
+
+def test_browser_history(tmp_path):
+    import sqlite3
+    from datetime import timedelta
+    from personal_api import queries
+    from personal_api.collectors import browser
+
+    when = datetime(2026, 3, 4, 10, 0, tzinfo=timezone.utc)
+
+    def make(name, schema, rows):
+        db = sqlite3.connect(tmp_path / name)
+        db.executescript(schema)
+        for table, values in rows:
+            db.execute(f"INSERT INTO {table} VALUES ({','.join('?' * len(values))})", values)
+        db.commit()
+        db.close()
+        return str(tmp_path / name)
+
+    safari = make("History.db",
+                  "CREATE TABLE history_items (id INTEGER PRIMARY KEY, url TEXT);"
+                  "CREATE TABLE history_visits (id INTEGER PRIMARY KEY, history_item INTEGER, visit_time REAL, title TEXT);",
+                  [("history_items", (1, "https://docs.python.org/3/")),
+                   ("history_visits", (1, 1, (when - browser.MAC_EPOCH).total_seconds(), "Python docs"))])
+    micro = lambda epoch: int((when - epoch) / timedelta(microseconds=1))
+    chromium = make("History",
+                    "CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, title TEXT);"
+                    "CREATE TABLE visits (id INTEGER PRIMARY KEY, url INTEGER, visit_time INTEGER);",
+                    [("urls", (1, "https://www.github.com/x", "GitHub")),
+                     ("urls", (2, "https://netbanking.hdfcbank.com/login", "Bank")),
+                     ("urls", (3, "chrome://settings", "Settings")),
+                     ("visits", (1, 1, micro(browser.WEBKIT_EPOCH))),
+                     ("visits", (2, 2, micro(browser.WEBKIT_EPOCH))),
+                     ("visits", (3, 3, micro(browser.WEBKIT_EPOCH)))])
+    firefox = make("places.sqlite",
+                   "CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT, title TEXT);"
+                   "CREATE TABLE moz_historyvisits (id INTEGER PRIMARY KEY, place_id INTEGER, visit_date INTEGER);",
+                   [("moz_places", (1, "https://monkeytype.com/", None)),
+                    ("moz_historyvisits", (1, 1, micro(browser.UNIX_EPOCH)))])
+
+    config = {"database": {"path": str(tmp_path / "db.sqlite")}, "sources": {"browser": {
+        "enabled": True, "exclude_domains": ["hdfcbank.com"],
+        "profiles": [{"kind": "safari", "path": safari},
+                     {"kind": "chromium", "name": "helium", "path": chromium},
+                     {"kind": "firefox", "name": "zen", "path": firefox}]}}}
+    conn = connect(config["database"]["path"])
+    assert sync(conn, config)["browser"] == {"ok": True, "records": 3}
+    assert sync(conn, config)["browser"] == {"ok": True, "records": 0}  # nothing new
+
+    visits = queries.activity(conn, source="browser")["items"]
+    assert {v["timestamp"] for v in visits} == {"2026-03-04T10:00:00Z"}
+    assert {(v["data"]["browser"], v["data"]["domain"], v["title"]) for v in visits} == {
+        ("safari", "docs.python.org", "Python docs"), ("helium", "github.com", "GitHub"),
+        ("zen", "monkeytype.com", "monkeytype.com")}
+    assert queries.activity(conn)["total"] == 0  # hidden from the default timeline

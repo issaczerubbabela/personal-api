@@ -1,4 +1,4 @@
-"""Collectors: one module per source. Each exposes collect(settings) -> CollectResult.
+"""Collectors: one module per source. Each exposes collect(settings, ctx) -> CollectResult.
 
 To add a source, write a module with a `collect` function and register it in COLLECTORS.
 """
@@ -21,12 +21,32 @@ class CollectResult:
     replace_window: tuple[str, str] | None = None
 
 
-from . import calendar, expenses, github  # noqa: E402
+@dataclass
+class Context:
+    """What a collector may ask about its own previous runs."""
 
-COLLECTORS: dict[str, Callable[[dict[str, Any]], CollectResult]] = {
+    conn: sqlite3.Connection
+    source: str
+
+    def latest(self, type: str, id_prefix: str = "") -> str | None:
+        """Timestamp of the newest stored record of this type, for incremental syncs."""
+        return self.conn.execute(
+            "SELECT MAX(timestamp) FROM records WHERE source = ? AND type = ?"
+            " AND external_id LIKE ? ESCAPE '\\'",
+            (self.source, type, id_prefix.replace("%", "\\%").replace("_", "\\_") + "%"),
+        ).fetchone()[0]
+
+
+from . import browser, calendar, expenses, github, leetcode, monkeytype, obsidian  # noqa: E402
+
+COLLECTORS: dict[str, Callable[[dict[str, Any], Context], CollectResult]] = {
     "github": github.collect,
     "calendar": calendar.collect,
     "expenses": expenses.collect,
+    "leetcode": leetcode.collect,
+    "monkeytype": monkeytype.collect,
+    "obsidian": obsidian.collect,
+    "browser": browser.collect,
 }
 
 
@@ -41,7 +61,7 @@ def sync(conn: sqlite3.Connection, config: dict[str, Any], only: list[str] | Non
             continue
         started = now_utc()
         try:
-            result = collect(settings)
+            result = collect(settings, Context(conn, name))
             with conn:
                 if result.replace_window:
                     start, end = result.replace_window

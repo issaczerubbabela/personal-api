@@ -36,7 +36,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         finally:
             conn.close()
 
-    app = FastAPI(title="Personal API", version="0.2.0", dependencies=[Depends(auth)])
+    app = FastAPI(title="Personal API", version="0.3.0", dependencies=[Depends(auth)])
 
     @app.exception_handler(ValueError)
     def bad_argument(request: Request, exc: ValueError) -> JSONResponse:
@@ -57,7 +57,8 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
         conn: sqlite3.Connection = Depends(db),
     ) -> dict[str, Any]:
-        """One timeline across every source, newest first."""
+        """One timeline across every source, newest first. Browser visits appear only
+        when you ask for them with source=browser."""
         return queries.activity(conn, since, until, source, type, limit, offset)
 
     @app.get("/projects")
@@ -79,6 +80,19 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         """Full-text search over titles and content. Every word must match (prefix allowed)."""
         return queries.search(conn, q, source, limit)
+
+    @app.get("/stats")
+    def stats(conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        """Current numbers per source: LeetCode solved counts, typing bests, streaks."""
+        return queries.stats(conn)
+
+    @app.get("/records/{record_id}")
+    def record(record_id: int, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        """One record in full. Lists cut long content short; this does not."""
+        found = queries.record(conn, record_id)
+        if not found:
+            raise HTTPException(404, "No such record")
+        return found
 
     @app.get("/spending")
     def spending(

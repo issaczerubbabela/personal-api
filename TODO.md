@@ -63,101 +63,87 @@ credentials, your own machine).
 - [ ] Decide which assistants you are comfortable giving this data to; whatever a tool
       returns is sent to that assistant's provider.
 
-## Candidates: applications to add next
-
-Ordered by value for effort. Nothing here is built yet. Each needs a collector module
-(about 50–100 lines) plus the setup steps listed.
-
-### Everything MD (your notes)
-
-Why: the best source for "an agent that knows you", and search becomes far more useful.
-Effort: low. The notes are files you already own.
-
-- [ ] Tell me where the notes live (a folder of `.md` files? a database? a repo?).
-- [ ] Decide which folders are in scope and which are private and stay out.
-
 ### LeetCode
 
-Why: coding streaks and a "problems solved" figure for the portfolio.
-Effort: low. Unofficial public GraphQL endpoint, no login for public profiles.
+- [ ] Set `[sources.leetcode] username` and `enabled = true`.
+- [ ] Make sure the profile is public, and that "Display my submission history" is on in
+      LeetCode's privacy settings if you want the per-day history.
+- [ ] Run `uv run papi sync leetcode` and check `/stats`.
+- [ ] Know the limit: LeetCode only exposes your latest 20 accepted submissions publicly, so
+      individual problems build up from now on. Counts and per-day history go back in full.
 
-- [ ] Give me your LeetCode username and make sure the profile is public.
-- [ ] Accept that it is unofficial and can break without notice.
+### Monkeytype
 
-### Notion
+- [ ] Set `[sources.monkeytype] username` and `enabled = true`. That alone gives totals,
+      streak and personal bests.
+- [ ] Optional, for every individual test: Monkeytype → Account settings → Ape keys →
+      generate one and activate it, then set `ape_key` (or `MONKEYTYPE_APE_KEY`).
+- [ ] Keep this source to an hourly sync at most; an ApeKey may fetch results 30 times a day.
 
-Why: project notes, reading lists and any databases you keep there.
-Effort: low to medium. Official API.
+### Obsidian
 
-- [ ] Create an internal integration at notion.so/my-integrations and copy its token.
-- [ ] Share the specific pages and databases you want synced with that integration.
-- [ ] Tell me which databases matter (tasks, reading list, journal, ...).
+- [ ] Set `[sources.obsidian] vault` to the vault folder and `enabled = true`.
+- [ ] List folders to keep out in `exclude` (work notes, journal, anything you would not
+      want an AI assistant to read).
+- [ ] Run the sync on the Mac that has the vault. If the vault is in iCloud, the path is
+      under `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/`.
+- [ ] Run `uv run papi sync obsidian` and try `/search?q=<something from a note>`.
 
-### Spotify
+### Browser history (Safari, Helium, and the older Firefox, Zen, Chrome)
 
-Why: listening history for the life log.
-Effort: medium. Official API, but OAuth, and it only returns the last 50 plays, so the
-sync must run at least hourly to avoid gaps.
+- [ ] Give your terminal Full Disk Access (System Settings → Privacy & Security), which
+      Safari's history needs. Do the same for whatever runs the scheduled sync.
+- [ ] Find Helium's history file (a file named `History` inside its profile folder under
+      `~/Library/Application Support/`) and add it as a `chromium` profile. The path in
+      `config.example.toml` is my best guess; check it.
+- [ ] If the old Firefox, Zen and Chrome profiles are still on disk, add them once to
+      import their history (`places.sqlite` for Firefox and Zen, `History` for Chrome).
+- [ ] Fill in `exclude_domains` before the first sync: banking, health, work, anything
+      private. Excluded domains are never stored.
+- [ ] Run `uv run papi sync browser` and check `/activity?source=browser&limit=5`.
+- [ ] This collector is tested against databases I built to match each browser's schema,
+      not real history files. Tell me if a real one fails.
 
-- [ ] Create an app at developer.spotify.com and note the client ID and secret.
-- [ ] Run a one-time login in the browser to get a refresh token (I will add a
-      `papi auth spotify` command for this).
-- [ ] Optional: request your extended streaming history from Spotify's privacy page to
-      backfill older years.
+## Candidates: applications to add next
 
-### Browser history
+Nothing here is built yet. Both need files only you can get.
 
-Why: fills in "what was I reading or researching that day".
-Effort: low. Chrome and Firefox keep it in a local SQLite file.
+### YouTube Music
 
-- [ ] Run the API on the same machine as the browser, or copy the history file to it.
-- [ ] Decide on a domain blocklist (banking, health, anything you do not want indexed).
+Why: your listening history. There is no official API, so the route is Google Takeout,
+where YouTube Music plays appear inside YouTube's watch history.
 
-### Gmail
+- [ ] Go to takeout.google.com, select only **YouTube and YouTube Music**, and under
+      "All YouTube data included" choose **history** with format **JSON**.
+- [ ] Download and unzip it, and tell me the folder. I will build the collector against
+      the real `watch-history.json`.
+- [ ] Set Takeout to repeat every two months if you want it kept current.
 
-Why: receipts, bookings and "who was I talking to about X".
-Effort: medium to high. OAuth with a sensitive scope, and it is the riskiest dataset here.
+### HDFC bank statements
 
-- [ ] Create a Google Cloud project, enable the Gmail API, and create OAuth credentials.
-- [ ] Decide the scope: I recommend metadata only (sender, subject, date, labels) or a
-      single label such as `Receipts`, not full message bodies.
+Why: catches transactions that never made it into L-Edgar. Lower priority, since L-Edgar
+already captures HDFC notifications.
 
-### Google Takeout (YouTube history, location, Chrome)
+- [ ] In HDFC NetBanking, download an account statement in delimited (CSV) format.
+- [ ] Send me the header row and one or two rows with the values changed. I will add an
+      importer that matches them against L-Edgar entries.
 
-Why: years of history in one go.
-Effort: medium. Export files only; no API.
+### Old Spotify and Apple Music history (one-time backfill)
 
-- [ ] Request a Takeout export for YouTube history and (if enabled) Timeline, in JSON.
-- [ ] Download and unzip it into a folder the collector reads.
-- [ ] Repeat every few months, or schedule Takeout's recurring export to Drive.
+Why: only if you want past years in the life log. Both are one-off data requests.
 
-### Health and fitness (Google Fit / Health Connect / Apple Health)
+- [ ] Spotify: Account → Privacy → request **Extended streaming history**.
+- [ ] Apple Music: privacy.apple.com → request a copy of **Apple Media Services** data.
 
-Why: steps, sleep and workouts for the dashboard.
-Effort: medium. Mostly export-file based on the phone.
+### Ruled out
 
-- [ ] Tell me which phone and which app holds the data.
-- [ ] Set up a periodic export to a folder (Health Connect export, or Tasker on Android).
-
-### Bank statements
-
-Why: a check on L-Edgar, catching transactions you never logged.
-Effort: medium. No personal API; statement CSVs only. L-Edgar already parses HDFC, Axis
-and CUB notifications, so this is lower priority.
-
-- [ ] Download monthly statement CSVs per bank into a folder.
-- [ ] Send me one statement's header row per bank (no real rows needed).
-
-### WhatsApp, Instagram, LinkedIn, X
-
-Why: completeness. Effort: high for the value; all are manual export files with formats
-that change. I would leave these until you have a concrete use for them.
-
-- [ ] Request each platform's data export when you want it.
+- **Everything MD**: private to your organisation, so it stays out.
+- **Notion, Spotify (current)**: you do not use them.
 
 ## Not sources, but worth doing with what exists
 
 - [ ] Point your portfolio website at `/projects` and `/me` (needs the API reachable from
       the site's build or server, never from the browser with the token in it).
-- [ ] A small dashboard page over `/spending` and `/activity`.
+- [ ] Show `/stats` (LeetCode solved, typing speed) on the portfolio.
+- [ ] A small dashboard page over `/spending`, `/stats` and `/activity`.
 - [ ] An automation: "when a new repo appears in `/projects`, add it to the portfolio".

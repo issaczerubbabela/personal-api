@@ -46,7 +46,8 @@ def _summarize(event: dict[str, Any]) -> str:
     return f"{kind.removesuffix('Event')} in {repo}"
 
 
-def collect(settings: dict[str, Any], transport: httpx.BaseTransport | None = None) -> CollectResult:
+def collect(settings: dict[str, Any], ctx: Any = None, *,
+            transport: httpx.BaseTransport | None = None) -> CollectResult:
     username = settings.get("username")
     if not username:
         raise ValueError("sources.github.username is not set")

@@ -142,7 +142,8 @@ def _collect_ledgar(settings: dict[str, Any], transport: httpx.BaseTransport | N
     return CollectResult(records, replace_window=("0000", "9999") if records else None)
 
 
-def collect(settings: dict[str, Any], transport: httpx.BaseTransport | None = None) -> CollectResult:
+def collect(settings: dict[str, Any], ctx: Any = None, *,
+            transport: httpx.BaseTransport | None = None) -> CollectResult:
     if settings.get("kind") == "ledgar":
         return _collect_ledgar(settings, transport)
     if not settings.get("path"):

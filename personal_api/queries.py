@@ -11,6 +11,18 @@ from typing import Any
 from .db import row_to_dict, to_utc
 
 
+SNIPPET = 400
+
+
+def _item(row: sqlite3.Row) -> dict[str, Any]:
+    """A record for a list: long content (notes) is cut short; get the rest with record()."""
+    item = row_to_dict(row)
+    if len(item["content"]) > SNIPPET:
+        item["content"] = item["content"][:SNIPPET].rstrip() + "..."
+        item["content_truncated"] = True
+    return item
+
+
 def _time(value: str | None, name: str) -> str | None:
     if value is None:
         return None
@@ -52,14 +64,17 @@ def activity(conn: sqlite3.Connection, since: str | None = None, until: str | No
             where.append(clause)
             params.append(value)
     if type is None:
-        where.append("NOT (source = 'github' AND type = 'repo')")  # repos live in projects
+        # Not things you did at a moment in time: repos live in projects, snapshots in stats.
+        where.append("NOT (source = 'github' AND type = 'repo') AND type != 'stats'")
+    if source is None and type is None:
+        where.append("source != 'browser'")  # thousands of page visits would drown the rest
     sql = " FROM records WHERE " + " AND ".join(where)
     total = conn.execute("SELECT COUNT(*)" + sql, params).fetchone()[0]
     rows = conn.execute(
         "SELECT *" + sql + " ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
         [*params, limit, offset],
     )
-    return {"total": total, "items": [row_to_dict(r) for r in rows]}
+    return {"total": total, "items": [_item(r) for r in rows]}
 
 
 def projects(conn: sqlite3.Connection, include_forks: bool = False,
@@ -91,8 +106,23 @@ def search(conn: sqlite3.Connection, q: str, source: str | None = None,
         params.append(source)
     rows = conn.execute(sql + " ORDER BY bm25(records_fts), timestamp DESC LIMIT ?",
                         [*params, limit])
-    items = [row_to_dict(r) for r in rows]
+    items = [_item(r) for r in rows]
     return {"total": len(items), "items": items}
+
+
+def record(conn: sqlite3.Connection, record_id: int) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
+    return row_to_dict(row) if row else None
+
+
+def stats(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Current snapshot numbers per source (LeetCode solved counts, typing bests, ...)."""
+    out: dict[str, Any] = {}
+    for row in conn.execute("SELECT * FROM records WHERE type = 'stats' ORDER BY source"):
+        item = row_to_dict(row)
+        out[item["source"]] = {"summary": item["title"], "url": item["url"],
+                               "as_of": item["timestamp"], **item["data"]}
+    return out
 
 
 SPENDING_GROUPS = {

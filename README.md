@@ -5,7 +5,7 @@ into one SQLite database you own; the API reads only that local copy, so it is f
 works offline, and keeps working if a service locks you out.
 
 ```
-collectors (GitHub, calendar, expenses)  ->  SQLite (records + full-text index)  ->  HTTP API (FastAPI)
+collectors (one per source)             ->  SQLite (records + full-text index)  ->  HTTP API (FastAPI)
                                                                                  ->  MCP server (AI agents)
 ```
 
@@ -33,17 +33,19 @@ Every endpoint needs `Authorization: Bearer <api.token>`.
 | Endpoint | What it returns |
 | --- | --- |
 | `GET /me` | Your profile from `config.toml`, plus record counts and last sync status per source |
-| `GET /activity?since=&until=&source=&type=&limit=&offset=` | One timeline across all sources, newest first |
+| `GET /activity?since=&until=&source=&type=&limit=&offset=` | One timeline across all sources, newest first. Browser visits only appear with `source=browser` |
 | `GET /projects?include_forks=&include_private=&include_archived=` | Your repositories, most recently pushed first |
 | `GET /search?q=&source=` | Full-text search over titles and content |
+| `GET /stats` | Current numbers per source: LeetCode solved counts, ranking and streak; Monkeytype tests and best wpm |
+| `GET /records/{id}` | One record in full (lists cut long content such as notes to a snippet) |
 | `GET /spending?since=&until=&group_by=&type=` | Money totals grouped by `category`, `month`, `day` or `account`; `type` is `expense` (default), `income` or `transfer` |
 
 ## MCP server
 
 `papi mcp` runs a read-only [MCP](https://modelcontextprotocol.io) server over stdio, so an
 AI agent on the same machine can ask about your projects, schedule and spending. It reads the
-same SQLite file and exposes five tools: `get_profile`, `get_activity`, `list_projects`,
-`search` and `spending_summary`.
+same SQLite file and exposes seven tools: `get_profile`, `get_activity`, `list_projects`,
+`search`, `get_record`, `get_stats` and `spending_summary`.
 
 Claude Code:
 
@@ -76,6 +78,14 @@ assistants you would hand this data to.
 | `github` | REST API: repos and the last ~90 days of activity | Username; a token is optional and adds private repos |
 | `calendar` | iCal feed, recurring events expanded in a rolling window | Google Calendar → Settings → your calendar → *Secret address in iCal format* |
 | `expenses` | [L-Edgar](https://github.com/issaczerubbabela/L-Edgar): the Google Sheet, read through the app's Apps Script web app. Also any CSV export or SQLite database | `kind = "ledgar"` and the Apps Script deployment URL |
+| `leetcode` | Public GraphQL endpoint (unofficial): solved counts, ranking, streak, the latest 20 accepted submissions, and submissions per day for every active year | Username; profile must be public |
+| `monkeytype` | Official API: profile totals and personal bests, plus every test with an ApeKey (new tests only after the first run) | Username, and optionally an ApeKey |
+| `obsidian` | Reads the vault's Markdown files: text, tags, wikilinks. Deleted notes are removed | Vault path and folders to exclude |
+| `browser` | Reads Safari, Chromium-family (Chrome, Helium) and Firefox-family (Firefox, Zen) history files; new visits only after the first run | One `[[sources.browser.profiles]]` entry per browser, and a domain blocklist |
+
+`obsidian` and `browser` read local files, so the sync has to run on the machine that has
+them. Safari's history is protected by macOS: give your terminal (and whatever runs the
+scheduled sync) Full Disk Access in System Settings → Privacy & Security.
 
 ### L-Edgar
 
@@ -100,7 +110,7 @@ Everything is one row in `records`:
 
 | Column | Meaning |
 | --- | --- |
-| `source`, `type` | `github`/`repo`, `github`/`event`, `calendar`/`event`, `expenses`/`expense`, `expenses`/`income`, `expenses`/`transfer` |
+| `source`, `type` | e.g. `github`/`event`, `calendar`/`event`, `expenses`/`expense`, `leetcode`/`solved`, `monkeytype`/`test`, `obsidian`/`note`, `browser`/`visit`. `stats` records are snapshots served by `/stats` |
 | `external_id` | Stable id within the source |
 | `timestamp` | UTC, `YYYY-MM-DDTHH:MM:SSZ` |
 | `title`, `content` | Searchable text |
@@ -109,9 +119,10 @@ Everything is one row in `records`:
 
 ## Adding a source
 
-Add a module in `personal_api/collectors/` with a `collect(settings) -> CollectResult`
+Add a module in `personal_api/collectors/` with a `collect(settings, ctx) -> CollectResult`
 function that returns `Record`s, and register it in `COLLECTORS` in
-`personal_api/collectors/__init__.py`. Its settings come from `[sources.<name>]`.
+`personal_api/collectors/__init__.py`. Its settings come from `[sources.<name>]`;
+`ctx.latest(type)` gives the newest stored timestamp for incremental syncs.
 
 ## Security
 

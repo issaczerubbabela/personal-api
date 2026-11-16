@@ -17,7 +17,7 @@ from ..db import Record, to_utc
 from . import CollectResult
 
 
-def collect(settings: dict[str, Any], now: datetime | None = None) -> CollectResult:
+def collect(settings: dict[str, Any], ctx: Any = None, *, now: datetime | None = None) -> CollectResult:
     location = settings.get("ics_url")
     if not location:
         raise ValueError("sources.calendar.ics_url is not set")
