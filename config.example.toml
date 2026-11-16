@@ -1,0 +1,88 @@
+# Copy to config.toml (gitignored) and fill in. Secrets can come from env vars instead:
+#   PAPI_TOKEN, GITHUB_TOKEN, CALENDAR_ICS_URL, LEDGAR_SCRIPT_URL, MONKEYTYPE_APE_KEY
+
+[api]
+# Required. Generate one with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
+token = ""
+
+[database]
+path = "data/personal.db"
+
+# Served as-is from /me. Add any keys you like.
+[profile]
+name = "Your Name"
+bio = ""
+location = ""
+[profile.links]
+github = "https://github.com/your-username"
+
+[sources.github]
+enabled = true
+username = "your-username"
+# Optional. Without a token you get public repos/events only (60 requests/hour).
+# A fine-grained token with read-only "Metadata" + "Contents" also includes private repos.
+token = ""
+
+[sources.calendar]
+enabled = false
+# Google Calendar -> Settings -> your calendar -> "Secret address in iCal format".
+# Treat this URL like a password. A local .ics file path also works.
+ics_url = ""
+past_days = 90
+future_days = 60
+
+[sources.expenses]
+enabled = false
+currency = "INR"
+
+# kind = "ledgar": the L-Edgar app. Reads the Google Sheet through the same Apps Script
+#   web app the phone syncs to. script_url is the deployment URL you pasted into the app
+#   (More -> Settings -> Database Setup). Anyone holding it can read AND write the ledger,
+#   so treat it like a password; LEDGAR_SCRIPT_URL in the environment also works.
+kind = "ledgar"
+script_url = ""
+
+# kind = "csv": path is a CSV file (or a glob like "exports/*.csv") with a header row.
+# kind = "sqlite": path is a tracker's database, opened read-only; `query` must return
+#   columns named date, amount, description, category (alias as needed).
+# path = "expenses.csv"
+# query = "SELECT created_at AS date, amount, note AS description, category FROM expenses"
+# [sources.expenses.columns]   # csv only: your header names
+# date = "date"
+# amount = "amount"
+# description = "description"
+# category = "category"
+
+[sources.leetcode]
+enabled = false
+username = ""          # the profile must be public
+
+[sources.monkeytype]
+enabled = false
+username = ""          # public profile: totals, streak, personal bests (no key needed)
+# Optional, for every individual test: Monkeytype -> Account settings -> Ape keys.
+# Limited to 30 calls a day, so do not sync more often than hourly.
+ape_key = ""
+
+[sources.obsidian]
+enabled = false
+vault = "~/Documents/MyVault"
+exclude = ["Private", "Work"]     # folder names or paths inside the vault to skip
+
+[sources.browser]
+enabled = false
+# Domains (and their subdomains) that are never stored.
+exclude_domains = ["netbanking.hdfcbank.com", "accounts.google.com"]
+
+[[sources.browser.profiles]]
+kind = "safari"        # reads ~/Library/Safari/History.db; the terminal needs Full Disk Access
+
+# [[sources.browser.profiles]]
+# kind = "chromium"    # Chrome, Helium, Brave, Arc: the profile's "History" file
+# name = "helium"
+# path = "~/Library/Application Support/net.imput.helium/Default/History"
+
+# [[sources.browser.profiles]]
+# kind = "firefox"     # Firefox, Zen: the profile's "places.sqlite"
+# name = "zen"
+# path = "~/Library/Application Support/zen/Profiles/<profile>/places.sqlite"
