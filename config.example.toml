@@ -1,0 +1,47 @@
+# Copy to config.toml (gitignored) and fill in. Secrets can come from env vars instead:
+#   PAPI_TOKEN, GITHUB_TOKEN, CALENDAR_ICS_URL
+
+[api]
+# Required. Generate one with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
+token = ""
+
+[database]
+path = "data/personal.db"
+
+# Served as-is from /me. Add any keys you like.
+[profile]
+name = "Your Name"
+bio = ""
+location = ""
+[profile.links]
+github = "https://github.com/your-username"
+
+[sources.github]
+enabled = true
+username = "your-username"
+# Optional. Without a token you get public repos/events only (60 requests/hour).
+# A fine-grained token with read-only "Metadata" + "Contents" also includes private repos.
+token = ""
+
+[sources.calendar]
+enabled = false
+# Google Calendar -> Settings -> your calendar -> "Secret address in iCal format".
+# Treat this URL like a password. A local .ics file path also works.
+ics_url = ""
+past_days = 90
+future_days = 60
+
+[sources.expenses]
+enabled = false
+# kind = "csv": path is a CSV file (or a glob like "exports/*.csv") with a header row.
+# kind = "sqlite": path is your expense tracker's database, opened read-only; `query`
+#   must return columns named date, amount, description, category (alias as needed).
+kind = "csv"
+path = "expenses.csv"
+currency = "INR"
+# query = "SELECT created_at AS date, amount, note AS description, category FROM expenses"
+[sources.expenses.columns]   # csv only: your header names
+date = "date"
+amount = "amount"
+description = "description"
+category = "category"
