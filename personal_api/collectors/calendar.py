@@ -58,4 +58,4 @@ def collect(settings: dict[str, Any], now: datetime | None = None) -> CollectRes
                 },
             )
         )
-    return CollectResult(records, replace_window=("calendar", "event", to_utc(start), to_utc(end)))
+    return CollectResult(records, replace_window=(to_utc(start), to_utc(end)))

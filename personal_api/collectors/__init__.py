@@ -16,9 +16,9 @@ from ..db import Record, now_utc, upsert
 @dataclass
 class CollectResult:
     records: list[Record]
-    # Optional (source, type, start, end): this run is the complete truth for that window,
-    # so records in it that were not returned (e.g. deleted calendar events) are removed.
-    replace_window: tuple[str, str, str, str] | None = None
+    # Optional (start, end): this run is the complete truth for that window, so the source's
+    # records in it that were not returned (deleted events or transactions) are removed.
+    replace_window: tuple[str, str] | None = None
 
 
 from . import calendar, expenses, github  # noqa: E402
@@ -44,16 +44,16 @@ def sync(conn: sqlite3.Connection, config: dict[str, Any], only: list[str] | Non
             result = collect(settings)
             with conn:
                 if result.replace_window:
-                    source, type_, start, end = result.replace_window
-                    keep = {r.external_id for r in result.records if r.type == type_}
+                    start, end = result.replace_window
+                    keep = {(r.type, r.external_id) for r in result.records}
                     stale = [
                         row["id"]
                         for row in conn.execute(
-                            "SELECT id, external_id FROM records WHERE source = ? AND type = ?"
+                            "SELECT id, type, external_id FROM records WHERE source = ?"
                             " AND timestamp >= ? AND timestamp < ?",
-                            (source, type_, start, end),
+                            (name, start, end),
                         )
-                        if row["external_id"] not in keep
+                        if (row["type"], row["external_id"]) not in keep
                     ]
                     conn.executemany("DELETE FROM records WHERE id = ?", [(i,) for i in stale])
                 count = upsert(conn, result.records)

@@ -1,4 +1,4 @@
-"""The API. Reads only the local SQLite copy; never calls upstream services."""
+"""The HTTP API. Reads only the local SQLite copy; never calls upstream services."""
 
 from __future__ import annotations
 
@@ -6,11 +6,13 @@ import secrets
 import sqlite3
 from typing import Any, Iterator
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from . import queries
 from .config import load_config
-from .db import connect, row_to_dict, to_utc
+from .db import connect
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -34,34 +36,16 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         finally:
             conn.close()
 
-    def parse_time(value: str | None, name: str) -> str | None:
-        if value is None:
-            return None
-        try:
-            return to_utc(value)
-        except ValueError:
-            raise HTTPException(422, f"{name} must be an ISO date or datetime, e.g. 2026-03-01")
+    app = FastAPI(title="Personal API", version="0.2.0", dependencies=[Depends(auth)])
 
-    app = FastAPI(title="Personal API", version="0.1.0", dependencies=[Depends(auth)])
+    @app.exception_handler(ValueError)
+    def bad_argument(request: Request, exc: ValueError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
 
     @app.get("/me")
     def me(conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         """Your profile plus what is in the store and how fresh it is."""
-        sources = {}
-        for row in conn.execute(
-            "SELECT source, COUNT(*) AS records, MIN(timestamp) AS earliest,"
-            " MAX(timestamp) AS latest FROM records GROUP BY source"
-        ):
-            sources[row["source"]] = dict(row) | {"last_sync": None}
-            del sources[row["source"]]["source"]
-        for row in conn.execute(
-            "SELECT source, finished_at, ok, error FROM sync_runs"
-            " WHERE id IN (SELECT MAX(id) FROM sync_runs GROUP BY source)"
-        ):
-            sources.setdefault(row["source"], {"records": 0})["last_sync"] = {
-                "at": row["finished_at"], "ok": bool(row["ok"]), "error": row["error"],
-            }
-        return {"profile": config["profile"], "sources": sources}
+        return queries.profile(conn, config)
 
     @app.get("/activity")
     def activity(
@@ -74,25 +58,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         conn: sqlite3.Connection = Depends(db),
     ) -> dict[str, Any]:
         """One timeline across every source, newest first."""
-        where, params = ["1 = 1"], []
-        for clause, value in (
-            ("timestamp >= ?", parse_time(since, "since")),
-            ("timestamp < ?", parse_time(until, "until")),
-            ("source = ?", source),
-            ("type = ?", type),
-        ):
-            if value is not None:
-                where.append(clause)
-                params.append(value)
-        if type is None:
-            where.append("NOT (source = 'github' AND type = 'repo')")  # repos live in /projects
-        sql = " FROM records WHERE " + " AND ".join(where)
-        total = conn.execute("SELECT COUNT(*)" + sql, params).fetchone()[0]
-        rows = conn.execute(
-            "SELECT *" + sql + " ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
-            [*params, limit, offset],
-        )
-        return {"total": total, "items": [row_to_dict(r) for r in rows]}
+        return queries.activity(conn, since, until, source, type, limit, offset)
 
     @app.get("/projects")
     def projects(
@@ -102,21 +68,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         conn: sqlite3.Connection = Depends(db),
     ) -> dict[str, Any]:
         """Your repositories, most recently pushed first. Private repos are opt-in."""
-        items = []
-        for row in conn.execute(
-            "SELECT * FROM records WHERE source = 'github' AND type = 'repo'"
-            " ORDER BY timestamp DESC"
-        ):
-            repo = row_to_dict(row)
-            d = repo["data"]
-            if (d.get("fork") and not include_forks) or (d.get("private") and not include_private) \
-                    or (d.get("archived") and not include_archived):
-                continue
-            items.append({
-                "name": repo["title"], "description": repo["content"], "url": repo["url"],
-                "last_pushed": repo["timestamp"], **d,
-            })
-        return {"total": len(items), "items": items}
+        return queries.projects(conn, include_forks, include_private, include_archived)
 
     @app.get("/search")
     def search(
@@ -126,17 +78,17 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         conn: sqlite3.Connection = Depends(db),
     ) -> dict[str, Any]:
         """Full-text search over titles and content. Every word must match (prefix allowed)."""
-        terms = [t.replace('"', '""') for t in q.split()]
-        match = " ".join(f'"{t}"*' for t in terms)
-        sql = ("SELECT records.* FROM records_fts JOIN records ON records.id = records_fts.rowid"
-               " WHERE records_fts MATCH ?")
-        params: list[Any] = [match]
-        if source:
-            sql += " AND records.source = ?"
-            params.append(source)
-        rows = conn.execute(sql + " ORDER BY bm25(records_fts), timestamp DESC LIMIT ?",
-                            [*params, limit])
-        items = [row_to_dict(r) for r in rows]
-        return {"total": len(items), "items": items}
+        return queries.search(conn, q, source, limit)
+
+    @app.get("/spending")
+    def spending(
+        since: str | None = None,
+        until: str | None = None,
+        group_by: str = Query("category", description="category, month, day or account"),
+        type: str = Query("expense", description="expense, income or transfer"),
+        conn: sqlite3.Connection = Depends(db),
+    ) -> dict[str, Any]:
+        """Totals for a period, grouped by category, month, day or account."""
+        return queries.spending(conn, since, until, group_by, type)
 
     return app

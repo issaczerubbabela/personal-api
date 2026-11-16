@@ -155,3 +155,106 @@ def test_expenses_from_sqlite(tmp_path):
     })
     assert result.records[0].timestamp == "2026-03-01T06:30:00Z"
     assert result.records[0].data["amount"] == 499.0
+
+
+# --- L-Edgar (Apps Script) ---------------------------------------------------------------
+
+LEDGAR_ROWS = [
+    {"id": "tx-1", "revision": "a", "timestamp": "3/3/2026 19:02:11", "date": "2026-03-03",
+     "type": "Expense", "expCategory": "Food", "incCategory": "", "description": "Biryani",
+     "amount": 320, "accountName": "HDFC", "fromAccountName": "", "toAccountName": "",
+     "remarks": "with friends", "isBookmarked": False},
+    {"id": "tx-2", "date": "2026-03-01", "type": "Income", "expCategory": "", "incCategory": "Salary",
+     "description": "March salary", "amount": 50000, "accountName": "HDFC", "remarks": ""},
+    {"id": "tx-3", "date": "2026-03-02", "type": "Transfer", "expCategory": "", "incCategory": "",
+     "description": "", "amount": 5000, "accountName": "", "fromAccountName": "HDFC",
+     "toAccountName": "Wallet", "remarks": ""},
+    {"id": "tx-4", "date": "2026-02-10", "type": "Expense", "expCategory": "Travel",
+     "description": "Train", "amount": 480.5, "accountName": "Wallet", "remarks": ""},
+]
+
+
+def ledgar_transport(rows):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["target"] == "transactions"
+        return httpx.Response(200, json={"status": "ok", "count": len(rows), "data": rows,
+                                         "scriptVersion": 2})
+    return httpx.MockTransport(handler)
+
+
+@pytest.fixture
+def ledgar(tmp_path, monkeypatch):
+    from personal_api import collectors
+    rows = list(LEDGAR_ROWS)
+    monkeypatch.setitem(collectors.COLLECTORS, "expenses",
+                        lambda s: expenses.collect(s, transport=ledgar_transport(rows)))
+    config = {
+        "api": {"token": "secret"}, "profile": {"name": "Test"},
+        "database": {"path": str(tmp_path / "db.sqlite")},
+        "sources": {"expenses": {"enabled": True, "kind": "ledgar",
+                                 "script_url": "https://script.example/exec"}},
+    }
+    conn = connect(config["database"]["path"])
+    assert sync(conn, config)["expenses"] == {"ok": True, "records": 4}
+    return config, conn, rows
+
+
+def test_ledgar_sync_and_spending(ledgar):
+    config, conn, rows = ledgar
+    client = TestClient(create_app(config), headers={"Authorization": "Bearer secret"})
+
+    transfer = client.get("/activity", params={"type": "transfer"}).json()["items"][0]
+    assert transfer["title"] == "Transfer HDFC -> Wallet"
+    assert transfer["data"]["to_account"] == "Wallet"
+    assert client.get("/search", params={"q": "friends"}).json()["items"][0]["title"] == "Biryani"
+
+    by_category = client.get("/spending").json()
+    assert by_category["total"] == 800.5  # income and transfers are not spending
+    assert by_category["groups"] == [{"key": "Travel", "total": 480.5, "count": 1},
+                                     {"key": "Food", "total": 320.0, "count": 1}]
+    march = client.get("/spending", params={"since": "2026-03-01", "group_by": "month"}).json()
+    assert march["groups"] == [{"key": "2026-03", "total": 320.0, "count": 1}]
+    assert client.get("/spending", params={"type": "income"}).json()["total"] == 50000
+    assert client.get("/spending", params={"group_by": "nope"}).status_code == 422
+
+    # Edited and deleted in the Sheet -> same after the next sync.
+    rows[0] = rows[0] | {"amount": 400}
+    del rows[3]
+    sync(conn, config)
+    assert client.get("/spending").json()["groups"] == [{"key": "Food", "total": 400.0, "count": 1}]
+
+
+def test_ledgar_script_error_is_reported(tmp_path):
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"status": "error", "message": "boom", "data": []}))
+    with pytest.raises(ValueError, match="boom"):
+        expenses.collect({"kind": "ledgar", "script_url": "https://script.example/exec"},
+                         transport=transport)
+
+
+# --- MCP ---------------------------------------------------------------------------------
+
+def test_mcp_tools(ledgar):
+    import anyio
+    from mcp import Client
+
+    from personal_api.mcp_server import create_server
+
+    config, conn, _ = ledgar
+
+    async def run():
+        async with Client(create_server(config)) as client:
+            tools = {t.name for t in (await client.list_tools()).tools}
+            assert tools == {"get_profile", "get_activity", "list_projects", "search",
+                             "spending_summary"}
+            profile = await client.call_tool("get_profile")
+            assert profile.structured_content["sources"]["expenses"]["records"] == 4
+            summary = await client.call_tool(
+                "spending_summary", {"since": "2026-03-01", "until": "2026-04-01"})
+            assert summary.structured_content["total"] == 320.0
+            found = await client.call_tool("search", {"query": "salary"})
+            assert found.structured_content["items"][0]["type"] == "income"
+            bad = await client.call_tool("get_activity", {"since": "last tuesday"})
+            assert bad.is_error
+
+    anyio.run(run)

@@ -1,4 +1,8 @@
-"""Expenses from a CSV export or directly from your expense tracker's SQLite database."""
+"""Money transactions.
+
+kind = "ledgar": the L-Edgar app's Google Sheet, read through its Apps Script web app.
+kind = "csv" / "sqlite": any other tracker, from an export file or its database.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+import httpx
 
 from ..db import Record, to_utc
 from . import CollectResult
@@ -68,7 +74,77 @@ def _sqlite_rows(settings: dict[str, Any]) -> Iterator[dict[str, Any]]:
         conn.close()
 
 
-def collect(settings: dict[str, Any]) -> CollectResult:
+def _collect_ledgar(settings: dict[str, Any], transport: httpx.BaseTransport | None) -> CollectResult:
+    """L-Edgar keeps every transaction in a Google Sheet; its Apps Script web app returns
+    them as JSON with a permanent Transaction ID, so edits and deletions carry over."""
+    url = settings.get("script_url")
+    if not url:
+        raise ValueError("sources.expenses.script_url is not set")
+    # Apps Script answers with a redirect to script.googleusercontent.com.
+    with httpx.Client(timeout=120, follow_redirects=True, transport=transport) as client:
+        response = client.get(url, params={"target": "transactions"})
+    response.raise_for_status()
+    try:
+        body = response.json()
+    except ValueError:
+        raise ValueError("Apps Script did not return JSON; check the deployment URL and that "
+                         "access is set to 'Anyone'") from None
+    if body.get("status") != "ok":
+        raise ValueError(f"Apps Script error: {body.get('message') or body.get('status')}")
+
+    currency = settings.get("currency", "INR")
+    records: list[Record] = []
+    seen: Counter[str] = Counter()
+    for row in body.get("data") or []:
+        kind = str(row.get("type") or "").strip().lower()
+        if kind not in ("expense", "income", "transfer") or not row.get("date"):
+            continue
+        amount = float(row.get("amount") or 0)
+        description = str(row.get("description") or "").strip()
+        remarks = str(row.get("remarks") or "").strip()
+        category = str(row.get("incCategory" if kind == "income" else "expCategory") or "").strip()
+        account = str(row.get("accountName") or "").strip()
+        from_account = str(row.get("fromAccountName") or "").strip()
+        to_account = str(row.get("toAccountName") or "").strip()
+        timestamp = _parse_date(row["date"], None)  # yyyy-MM-dd, a calendar day
+        external_id = str(row.get("id") or "").strip()
+        if not external_id:  # scripts older than version 2 have no Transaction ID
+            key = f"{timestamp}|{kind}|{amount}|{description}|{category}"
+            seen[key] += 1
+            external_id = hashlib.sha1(f"{key}#{seen[key]}".encode()).hexdigest()[:16]
+        if kind == "transfer":
+            title = description or f"Transfer {from_account} -> {to_account}".strip()
+        else:
+            title = description or category or kind.capitalize()
+        records.append(
+            Record(
+                source="expenses",
+                type=kind,
+                external_id=external_id,
+                timestamp=timestamp,
+                title=title,
+                content=" | ".join(p for p in (category, remarks, account, from_account, to_account) if p),
+                data={
+                    "amount": amount,
+                    "currency": currency,
+                    "category": category or None,
+                    "account": account or None,
+                    "from_account": from_account or None,
+                    "to_account": to_account or None,
+                    "remarks": remarks or None,
+                    "bookmarked": bool(row.get("isBookmarked")),
+                    "logged_at": row.get("timestamp") or None,
+                },
+            )
+        )
+    # The Sheet is the whole ledger, so anything it no longer has was deleted. An empty
+    # answer is more likely a wrong tab or deployment than a wiped ledger: keep what we have.
+    return CollectResult(records, replace_window=("0000", "9999") if records else None)
+
+
+def collect(settings: dict[str, Any], transport: httpx.BaseTransport | None = None) -> CollectResult:
+    if settings.get("kind") == "ledgar":
+        return _collect_ledgar(settings, transport)
     if not settings.get("path"):
         raise ValueError("sources.expenses.path is not set")
     kind = settings.get("kind", "csv")

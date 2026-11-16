@@ -1,5 +1,6 @@
 """papi sync [source ...]   pull data into SQLite
-papi serve               run the API
+papi serve               run the HTTP API
+papi mcp                 run the MCP server over stdio (for AI agents)
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     p_serve = sub.add_parser("serve", help="run the API server")
     p_serve.add_argument("--host", default="127.0.0.1", help="default 127.0.0.1 (local only)")
     p_serve.add_argument("--port", type=int, default=8000)
+
+    sub.add_parser("mcp", help="run the MCP server over stdio")
 
     args = parser.parse_args(argv)
     config = load_config(args.config)
@@ -51,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
         from .api import create_app
 
         uvicorn.run(create_app(config), host=args.host, port=args.port)
+
+    if args.command == "mcp":
+        from .mcp_server import create_server
+
+        create_server(config).run("stdio")
     return 0
 
 
